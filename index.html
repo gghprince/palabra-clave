@@ -172,11 +172,15 @@ const PEER_OPTS = { config:{ iceServers:[
   {urls:"stun:stun.cloudflare.com:3478"} ] } };
 
 const ls = {
-  get(k){ try { return localStorage.getItem(k) || ""; } catch(e){ return ""; } },
-  set(k,v){ try { v ? localStorage.setItem(k,v) : localStorage.removeItem(k); } catch(e){} }
+  get(k){ try { return sessionStorage.getItem(k) || localStorage.getItem(k) || ""; } catch(e){ return ""; } },
+  set(k,v){ for (const st of [()=>sessionStorage, ()=>localStorage]) { try { v ? st().setItem(k,v) : st().removeItem(k); } catch(e){} } }
+};
+const tab = {
+  get(k){ try { return sessionStorage.getItem(k) || ""; } catch(e){ return ""; } },
+  set(k,v){ try { sessionStorage.setItem(k,v); } catch(e){} }
 };
 function rid(n){ let s=""; const c="abcdefghijkmnpqrstuvwxyz23456789"; for(let i=0;i<n;i++) s+=c[Math.floor(Math.random()*c.length)]; return s; }
-let myId = ls.get("pc_cid"); if (!myId){ myId = rid(12); ls.set("pc_cid", myId); }
+let myId = tab.get("pc_cid"); if (!myId){ myId = rid(12); tab.set("pc_cid", myId); }
 
 /* ---------- Estado local ---------- */
 const S = { myId, name: ls.get("pc_name"), view:"home", code:"", isHost:false,
@@ -210,13 +214,17 @@ function viewFor(pid){
   return v;
 }
 function broadcast(){
-  ls.set("pc_host_state", JSON.stringify({code:S.code, state:S.state, t:Date.now()}));
+  ls.set("pc_host_state", JSON.stringify({code:S.code, hostId:S.myId, state:S.state, t:Date.now()}));
   for (const [pid,c] of S.conns) if (c.open) { try { c.send({type:"state", state:viewFor(pid)}); } catch(e){} }
   S.room = viewFor(S.myId); render();
 }
 function notify(pid,msg){ if (pid===S.myId) toast(msg); else { const c=S.conns.get(pid); if (c && c.open) c.send({type:"toast", msg}); } }
 function addLog(team,text){ S.state.log.push({t:Date.now(),team,text}); if (S.state.log.length>40) S.state.log.shift(); }
 
+function canGuess(st, p){
+  if (!p || !p.team || p.team!==st.turn) return false;
+  return p.role==="op";
+}
 function applyAction(pid, a){
   const st=S.state, p=st.players[pid];
   if (!p || !a) return;
@@ -256,7 +264,7 @@ function applyAction(pid, a){
     }
     case "guess": {
       const i=a.i|0;
-      if (st.status!=="playing" || p.role!=="op" || p.team!==st.turn || !st.clue.word || i<0 || i>24 || st.revealed[i]) return;
+      if (st.status!=="playing" || !canGuess(st,p) || !st.clue.word || i<0 || i>24 || st.revealed[i]) return;
       st.revealed[i]=true;
       const card=st.key[i], t=st.turn, rem=remainingOf(st);
       const kind={r:"roja", b:"azul", n:"neutral", a:"¡el asesino!"}[card];
@@ -270,7 +278,7 @@ function applyAction(pid, a){
       break;
     }
     case "pass": {
-      if (st.status!=="playing" || p.team!==st.turn || !st.clue.word) return;
+      if (st.status!=="playing" || !canGuess(st,p) || !st.clue.word) return;
       addLog(st.turn, `${esc(p.name)} pasa el turno.`);
       st.turn=other(st.turn); st.clue={word:"",count:0,team:""}; st.guessesLeft=0; break;
     }
@@ -280,7 +288,8 @@ function applyAction(pid, a){
   broadcast();
 }
 
-function hostRoom(code, restored){
+function hostRoom(code, restored, hostId){
+  if (hostId){ S.myId=hostId; tab.set("pc_cid", hostId); }
   cleanup();
   S.isHost=true; S.code=code; S.view="room"; S.room=null; S.status="Abriendo la sala…"; render();
   const peer = new Peer(PREFIX+code.toLowerCase(), PEER_OPTS);
@@ -299,7 +308,12 @@ function hostRoom(code, restored){
         conn._pid=pid;
         const old=S.conns.get(pid); if (old && old!==conn) { try{old.close();}catch(e){} }
         S.conns.set(pid, conn);
-        const prev=S.state.players[pid];
+        let prev=S.state.players[pid];
+        const nm=String(msg.name||"").trim().toLowerCase();
+        if (!prev && nm) for (const [oid,op] of Object.entries(S.state.players)){
+          const live = oid===S.myId || (S.conns.get(oid) && S.conns.get(oid).open);
+          if (!live && op.active && op.name.trim().toLowerCase()===nm){ prev=op; delete S.state.players[oid]; break; }
+        }
         S.state.players[pid] = { team:prev?.team||"", role:prev?.role||"op", name:String(msg.name||"Jugador").slice(0,20), active:true };
         broadcast();
       } else if (msg.type==="act" && conn._pid) applyAction(conn._pid, msg.action);
@@ -308,7 +322,7 @@ function hostRoom(code, restored){
   });
   peer.on("error", err => {
     if (err.type==="unavailable-id"){
-      if (restored){ toast("La sala "+code+" ya está abierta en otro dispositivo."); goHome(); }
+      if (restored){ S.myId=rid(12); tab.set("pc_cid", S.myId); joinRoom(code); }
       else hostRoom(newCode());
     } else if (err.type==="network" || err.type==="server-error" || err.type==="socket-error"){
       S.status="Sin conexión con el servidor de enlace. Reintentando…"; render();
@@ -459,7 +473,7 @@ function lobbyHTML(r){
 function gameHTML(r){
   const m=me(r), rem=r.rem||{r:0,b:0}, rev=r.revealed||[];
   const isSpy = (m && m.role==="spy" && m.team) || r.status==="ended";
-  const myTurnOp = m && r.status==="playing" && m.team===r.turn && m.role==="op" && r.clue.word;
+  const myTurnOp = m && r.status==="playing" && canGuess(r, m) && r.clue.word;
   const ps=players(r);
 
   const pill = t => `<div class="pill ${t} ${r.status==="playing"&&r.turn===t?"turn":""}">
@@ -556,7 +570,7 @@ $app.addEventListener("click", async e => {
     if (ls.get("pc_role")==="host"){
       if (!checkName() || !peerReady()) return;
       let saved=null; try { saved=JSON.parse(ls.get("pc_host_state")); } catch(err){}
-      hostRoom(code, saved && saved.code===code ? saved.state : null);
+      if (saved && saved.code===code) hostRoom(code, saved.state, saved.hostId); else hostRoom(code);
     } else doJoin(code);
   }
   else if (a==="leave") leave();
@@ -583,7 +597,7 @@ if (fromUrl){
       if (typeof Peer==="undefined") return setTimeout(go,300);
       if (ls.get("pc_role")==="host" && ls.get("pc_room")===fromUrl){
         let saved=null; try { saved=JSON.parse(ls.get("pc_host_state")); } catch(err){}
-        hostRoom(fromUrl, saved && saved.code===fromUrl ? saved.state : null);
+        if (saved && saved.code===fromUrl) hostRoom(fromUrl, saved.state, saved.hostId); else joinRoom(fromUrl);
       } else joinRoom(fromUrl);
     };
     go();
