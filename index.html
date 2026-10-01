@@ -116,9 +116,9 @@ details.rules p{margin:8px 0;color:var(--muted);font-size:15px}
 .c:disabled{cursor:default}
 .c.sel{transform:scale(.94);box-shadow:inset 0 0 0 3px var(--focus)}
 /* spymaster key */
-.spy .c.kr{box-shadow:inset 0 0 0 4px var(--red),inset 0 -3px 0 rgba(0,0,0,.12)}
-.spy .c.kb{box-shadow:inset 0 0 0 4px var(--blue),inset 0 -3px 0 rgba(0,0,0,.12)}
-.spy .c.kn{box-shadow:inset 0 0 0 4px var(--neutral),inset 0 -3px 0 rgba(0,0,0,.12)}
+.spy .c.kr{background:#F7C9C3;color:#5A1712;box-shadow:inset 0 0 0 3px var(--red),inset 0 -3px 0 rgba(0,0,0,.12)}
+.spy .c.kb{background:#C7D8F6;color:#11295A;box-shadow:inset 0 0 0 3px var(--blue),inset 0 -3px 0 rgba(0,0,0,.12)}
+.spy .c.kn{background:#EFE5C8;color:#4A3F22;box-shadow:inset 0 0 0 3px var(--neutral),inset 0 -3px 0 rgba(0,0,0,.12)}
 .spy .c.ka{background:#3A3A3A;color:#F2F2F2}
 /* revealed */
 .c.v{color:rgba(255,255,255,.75);box-shadow:none}
@@ -126,6 +126,12 @@ details.rules p{margin:8px 0;color:var(--muted);font-size:15px}
 .c.v.kn{background:var(--neutral);color:rgba(40,30,10,.55)}
 .c.v.ka{background:var(--assassin);color:#bbb}
 .c.v span{text-decoration:line-through;text-decoration-thickness:2px}
+.clue{flex-wrap:wrap}
+.timer{flex-basis:100%;display:flex;align-items:center;gap:8px;margin-top:2px}
+.timer .bar{flex:1;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.timer .bar i{display:block;height:100%;width:100%;background:var(--ink);transition:width .25s linear}
+.timer .sec{font-family:"Barlow Condensed",sans-serif;font-weight:700;font-size:18px;min-width:34px;text-align:right}
+.timer.urgent .bar i{background:var(--red)}.timer.urgent .sec{color:var(--red)}
 .c.flash{animation:flip .45s ease}
 @keyframes flip{0%{transform:rotateY(90deg)}100%{transform:rotateY(0)}}
 @media (prefers-reduced-motion:reduce){.c.flash{animation:none}.c{transition:none}}
@@ -166,6 +172,7 @@ const WORDS = [...new Set(("agua aguja ala alfombra alma ancla ángel anillo ara
 const TEAM_NAME = {r:"Rojo", b:"Azul"};
 const other = t => t === "r" ? "b" : "r";
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+const TURN_MS = 60000;
 const PREFIX = "palabraclave-keisy-v1-";
 const PEER_OPTS = { config:{ iceServers:[
   {urls:"stun:stun.l.google.com:19302"},{urls:"stun:stun1.l.google.com:19302"},
@@ -198,7 +205,7 @@ function shuffle(a){ a=a.slice(); for(let i=a.length-1;i>0;i--){const j=Math.flo
 /* ======================================================
    ANFITRIÓN: guarda el estado real y lo reparte
    ====================================================== */
-function blankGame(){ return {status:"lobby", words:[], key:[], revealed:[], turn:"", clue:{word:"",count:0,team:""},
+function blankGame(){ return {status:"lobby", words:[], key:[], revealed:[], turn:"", clue:{word:"",count:0,team:"",carry:0}, pending:{r:0,b:0},
   guessesLeft:0, winner:"", reason:"", log:[]}; }
 
 function remainingOf(st){
@@ -209,6 +216,7 @@ function viewFor(pid){
   const seeKey = st.status==="ended" || (p && p.role==="spy" && p.team);
   const v = JSON.parse(JSON.stringify(st));
   v.rem = remainingOf(st);
+  v.timeLeft = st.deadline ? Math.max(0, st.deadline-Date.now()) : 0; delete v.deadline;
   if (!seeKey) v.key = st.key.map((k,i)=> st.revealed[i] ? k : null);
   for (const [id,pl] of Object.entries(v.players)) pl.online = id===S.myId ? true : !!(S.conns.get(id) && S.conns.get(id).open);
   return v;
@@ -216,7 +224,7 @@ function viewFor(pid){
 function broadcast(){
   ls.set("pc_host_state", JSON.stringify({code:S.code, hostId:S.myId, state:S.state, t:Date.now()}));
   for (const [pid,c] of S.conns) if (c.open) { try { c.send({type:"state", state:viewFor(pid)}); } catch(e){} }
-  S.room = viewFor(S.myId); render();
+  setRoom(viewFor(S.myId));
 }
 function notify(pid,msg){ if (pid===S.myId) toast(msg); else { const c=S.conns.get(pid); if (c && c.open) c.send({type:"toast", msg}); } }
 function addLog(team,text){ S.state.log.push({t:Date.now(),team,text}); if (S.state.log.length>40) S.state.log.shift(); }
@@ -224,6 +232,12 @@ function addLog(team,text){ S.state.log.push({t:Date.now(),team,text}); if (S.st
 function canGuess(st, p){
   if (!p || !p.team || p.team!==st.turn) return false;
   return p.role==="op";
+}
+function endTurn(st, leftover){
+  const t=st.turn;
+  if (!st.pending) st.pending={r:0,b:0};
+  st.pending[t] = leftover>0 && leftover<90 ? leftover : 0;
+  st.turn=other(t); st.clue={word:"",count:0,team:"",carry:0}; st.guessesLeft=0; st.deadline=0;
 }
 function applyAction(pid, a){
   const st=S.state, p=st.players[pid];
@@ -258,8 +272,11 @@ function applyAction(pid, a){
       if (!word || /\s/.test(word)) return notify(pid,"La pista tiene que ser una sola palabra.");
       if (st.words.some((w,i)=>!st.revealed[i] && w.toLowerCase()===word.toLowerCase())) return notify(pid,"No puedes usar una palabra que está en el tablero.");
       const count = a.count===-1 ? -1 : Math.max(0, Math.min(9, parseInt(a.count,10)||0));
-      st.clue={word, count, team:st.turn}; st.guessesLeft = count<=0 ? 99 : count+1;
-      addLog(st.turn, `${esc(p.name)} da la pista «${esc(word.toUpperCase())}» ${count<0?"∞":count}`);
+      if (!st.pending) st.pending={r:0,b:0};
+      const carry = count<=0 ? 0 : (st.pending[st.turn]||0);
+      st.pending[st.turn]=0;
+      st.clue={word, count, team:st.turn, carry}; st.guessesLeft = count<=0 ? 99 : count+carry; st.deadline = Date.now()+TURN_MS;
+      addLog(st.turn, `${esc(p.name)} da la pista «${esc(word.toUpperCase())}» ${count<0?"∞":count}${carry?` (+${carry} pendientes)`:""}`);
       break;
     }
     case "guess": {
@@ -272,15 +289,15 @@ function applyAction(pid, a){
       if (card==="a"){ st.winner=other(t); st.reason="assassin"; }
       else if (rem.r===0){ st.winner="r"; st.reason="cleared"; }
       else if (rem.b===0){ st.winner="b"; st.reason="cleared"; }
-      if (st.winner){ st.status="ended"; st.guessesLeft=0; }
-      else if (card===t && st.guessesLeft-1>0) st.guessesLeft--;
-      else { st.turn=other(t); st.clue={word:"",count:0,team:""}; st.guessesLeft=0; }
+      if (st.winner){ st.status="ended"; st.guessesLeft=0; st.deadline=0; }
+      else if (card===t){ st.guessesLeft--; if (st.guessesLeft<=0) endTurn(st, 0); }
+      else endTurn(st, st.guessesLeft);
       break;
     }
     case "pass": {
       if (st.status!=="playing" || !canGuess(st,p) || !st.clue.word) return;
       addLog(st.turn, `${esc(p.name)} pasa el turno.`);
-      st.turn=other(st.turn); st.clue={word:"",count:0,team:""}; st.guessesLeft=0; break;
+      endTurn(st, st.guessesLeft); break;
     }
     case "leave": p.active=false; break;
     default: return;
@@ -347,7 +364,7 @@ function joinRoom(code){
       ls.set("pc_room", code); ls.set("pc_role","guest"); setUrl(code); S.status=""; render();
     });
     conn.on("data", msg => {
-      if (msg.type==="state"){ S.room=msg.state; S.status=""; render(); }
+      if (msg.type==="state"){ S.status=""; setRoom(msg.state); }
       else if (msg.type==="toast") toast(msg.msg);
       else if (msg.type==="closed"){ toast("El creador ha cerrado la sala."); goHome(); }
     });
@@ -404,6 +421,24 @@ function peerReady(){ if (typeof Peer==="undefined"){ toast("No se ha podido car
 function players(r){ return Object.entries(r.players||{}).filter(([,p])=>p && p.active).map(([id,p])=>({id,...p})); }
 function me(r){ const p=(r.players||{})[S.myId]; return p && p.active ? p : null; }
 
+function setRoom(r){
+  S.room=r; S.deadline = r.timeLeft ? Date.now()+r.timeLeft : 0; render(); tick();
+}
+function tick(){
+  const box=document.getElementById("timer"); if (!box) return;
+  const left=Math.max(0, S.deadline-Date.now()), sec=Math.ceil(left/1000);
+  box.querySelector("i").style.width=(left/TURN_MS*100)+"%";
+  box.querySelector(".sec").textContent=sec+" s";
+  box.classList.toggle("urgent", sec<=10);
+}
+setInterval(() => {
+  tick();
+  const st=S.state;
+  if (S.isHost && st && st.status==="playing" && st.deadline && Date.now()>=st.deadline){
+    addLog(st.turn, "Se acabó el tiempo.");
+    endTurn(st, st.guessesLeft); broadcast();
+  }
+}, 250);
 function render(){
   const active=document.activeElement, focusId=active && active.id, caret=active && active.selectionStart;
   if (S.view==="home") $app.innerHTML = homeHTML();
@@ -482,11 +517,12 @@ function gameHTML(r){
   let clue="";
   if (r.status!=="ended"){
     if (r.clue.word){
-      clue = `<div class="clue ${r.clue.team}"><span class="w">${esc(r.clue.word)}</span><span class="n">${r.clue.count<0?"∞":r.clue.count}</span>
-        ${r.guessesLeft<90?`<span class="muted" style="font-size:13px">quedan ${r.guessesLeft} ${r.guessesLeft===1?"intento":"intentos"}</span>`:""}</div>`;
+      clue = `<div class="clue ${r.clue.team}"><span class="w">${esc(r.clue.word)}</span><span class="n">${r.clue.count<0?"∞":r.clue.count}</span>${r.clue.carry?`<span class="muted" style="font-size:13px">+${r.clue.carry} pendientes</span>`:""}
+        ${r.guessesLeft<90?`<span class="muted" style="font-size:13px">quedan ${r.guessesLeft} ${r.guessesLeft===1?"intento":"intentos"}</span>`:""}
+        ${S.deadline?`<div class="timer" id="timer" role="timer" aria-label="Tiempo restante"><span class="bar"><i></i></span><span class="sec"></span></div>`:""}</div>`;
     } else {
       const spy=ps.find(p=>p.team===r.turn && p.role==="spy");
-      clue = `<div class="clue"><span class="wait">Esperando la pista de ${esc(spy?spy.name:"el jefe de "+TEAM_NAME[r.turn])}</span></div>`;
+      clue = `<div class="clue"><span class="wait">Esperando la pista de ${esc(spy?spy.name:"el jefe de "+TEAM_NAME[r.turn])}${(r.pending||{})[r.turn]?` (${TEAM_NAME[r.turn]} tiene ${r.pending[r.turn]} ${r.pending[r.turn]===1?"intento pendiente":"intentos pendientes"})`:""}</span></div>`;
     }
   }
 
