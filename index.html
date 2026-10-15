@@ -160,6 +160,8 @@ details.rules p{margin:8px 0;color:var(--muted);font-size:15px}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>if(typeof Peer==="undefined")document.write('<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"><\/script>');</script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>if(typeof mqtt==="undefined")document.write('<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"><\/script>');</script>
 </head>
 <body>
 <div class="wrap" id="app"></div>
@@ -177,6 +179,11 @@ const PREFIX = "palabraclave-keisy-v1-";
 const PEER_OPTS = { config:{ iceServers:[
   {urls:"stun:stun.l.google.com:19302"},{urls:"stun:stun1.l.google.com:19302"},
   {urls:"stun:stun.cloudflare.com:3478"} ] } };
+/* Relé por internet: si la conexión directa (WebRTC) no abre —típico con datos
+   móviles o redes distintas—, los mensajes viajan por un broker MQTT público. */
+const RELAY_URL = "wss://broker.emqx.io:8084/mqtt";
+const RELAY_TOPIC = "palabraclave-keisy-v1/";
+const RTC_WAIT_MS = 7000, RELAY_PING_MS = 5000, RELAY_DEAD_MS = 16000;
 
 const ls = {
   get(k){ try { return sessionStorage.getItem(k) || localStorage.getItem(k) || ""; } catch(e){ return ""; } },
@@ -192,7 +199,8 @@ let myId = tab.get("pc_cid"); if (!myId){ myId = rid(12); tab.set("pc_cid", myId
 /* ---------- Estado local ---------- */
 const S = { myId, name: ls.get("pc_name"), view:"home", code:"", isHost:false,
   peer:null, conn:null, conns:new Map(), state:null, room:null, status:"",
-  sel:-1, draft:{}, lastRevealed:null, retryT:null, wake:null };
+  sel:-1, draft:{}, lastRevealed:null, retryT:null, wake:null,
+  mq:null, mqSubs:new Map(), relayIn:new Map(), relayT:null, useRelay:false };
 S.draft.name = S.name;
 
 const $app = document.getElementById("app");
@@ -201,6 +209,81 @@ let toastT;
 function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("on");
   clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove("on"),2800); }
 function shuffle(a){ a=a.slice(); for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
+
+/* ======================================================
+   RELÉ MQTT: imita la interfaz de una conexión de PeerJS
+   (open, send, close, on("open"|"data"|"close"))
+   ====================================================== */
+function relayOk(){ return typeof mqtt!=="undefined"; }
+function relayTopic(code, sub){ return RELAY_TOPIC+code.toLowerCase()+"/"+sub; }
+function relayStart(){
+  if (S.mq) return;
+  S.mq = mqtt.connect(RELAY_URL, { clientId:"pc_"+rid(12), clean:true, reconnectPeriod:2000, connectTimeout:8000 });
+  S.mq.on("connect", () => { for (const t of S.mqSubs.keys()) S.mq.subscribe(t); });
+  S.mq.on("message", (t, payload) => {
+    const fn=S.mqSubs.get(t); if (!fn) return;
+    let m; try { m=JSON.parse(payload.toString()); } catch(e){ return; }
+    if (m && typeof m==="object") fn(m);
+  });
+  S.mq.on("error", e => console.warn("relé:", e && e.message));
+}
+function relaySub(t, fn){ S.mqSubs.set(t, fn); if (S.mq && S.mq.connected) S.mq.subscribe(t); }
+function relayPub(t, obj){ if (S.mq) { try { S.mq.publish(t, JSON.stringify(obj)); } catch(e){} } }
+function relayConn(topic, extra){
+  const c = { open:false, _relay:true, _closed:false, _seen:Date.now(), _h:{},
+    on(ev, fn){ (this._h[ev]=this._h[ev]||[]).push(fn); return this; },
+    _emit(ev, arg){ for (const fn of this._h[ev]||[]) { try { fn(arg); } catch(e){ console.warn(e); } } },
+    raw(obj){ relayPub(topic, {...extra, ...obj}); },
+    send(msg){ if (this.open) this.raw({msg}); },
+    close(){ if (this._closed) return; this._closed=true; this.open=false; clearInterval(this._iv); setTimeout(()=>this._emit("close"), 0); } };
+  return c;
+}
+function relayStop(){
+  clearInterval(S.relayT); S.relayT=null;
+  for (const c of S.relayIn.values()) c.close();
+  if (S.conn && S.conn._relay) S.conn.close();
+  if (S.mq){ try { S.mq.end(false); } catch(e){} }
+  S.mq=null; S.mqSubs=new Map(); S.relayIn=new Map();
+}
+/* Anfitrión: escucha en <sala>/h y responde a cada invitado en <sala>/g/<id> */
+function relayHost(code){
+  if (!relayOk()) return;
+  relayStart();
+  relaySub(relayTopic(code,"h"), m => {
+    const pid=String(m.from||"").slice(0,24); if (!pid || pid===S.myId || !S.state) return;
+    let c=S.relayIn.get(pid);
+    if (!c || c._closed){
+      const back=relayTopic(code,"g/"+pid);
+      if (!(m.msg && m.msg.type==="hello")) return relayPub(back, {who:1});
+      c=relayConn(back, {}); c.open=true; S.relayIn.set(pid, c); onGuestConn(c);
+    }
+    c._seen=Date.now();
+    if (m.ping) c.raw({pong:1});
+    else if (m.msg) c._emit("data", m.msg);
+  });
+  clearInterval(S.relayT);
+  S.relayT=setInterval(() => {
+    for (const [pid,c] of S.relayIn) if (Date.now()-c._seen>RELAY_DEAD_MS){ S.relayIn.delete(pid); c.close(); }
+  }, RELAY_PING_MS);
+}
+/* Invitado: envía a <sala>/h y escucha en <sala>/g/<miId> */
+function relayGuest(code, wire){
+  relayStart();
+  const c=relayConn(relayTopic(code,"h"), {from:S.myId});
+  S.conn=c; wire(c);
+  relaySub(relayTopic(code,"g/"+S.myId), m => {
+    if (S.conn!==c || c._closed) return;
+    c._seen=Date.now();
+    if (m.who) return c.raw({msg:{type:"hello", id:S.myId, name:S.name}});
+    if (!c.open){ c.open=true; c._emit("open"); }
+    if (m.msg) c._emit("data", m.msg);
+  });
+  c.raw({ping:1});
+  c._iv=setInterval(() => {
+    if (c.open && Date.now()-c._seen>RELAY_DEAD_MS) return c.close();
+    c.raw({ping:1});
+  }, RELAY_PING_MS);
+}
 
 /* ======================================================
    ANFITRIÓN: guarda el estado real y lo reparte
@@ -316,8 +399,21 @@ function hostRoom(code, restored, hostId){
     S.state.players[S.myId] = { ...(S.state.players[S.myId]||{team:"",role:"op"}), name:S.name, active:true };
     ls.set("pc_room", code); ls.set("pc_role","host"); S.status="";
     setUrl(code); keepAwake(); broadcast();
+    relayHost(code);
   });
-  peer.on("connection", conn => {
+  peer.on("connection", onGuestConn);
+  peer.on("error", err => {
+    if (err.type==="unavailable-id"){
+      if (restored){ S.myId=rid(12); tab.set("pc_cid", S.myId); joinRoom(code); }
+      else hostRoom(newCode());
+    } else if (err.type==="network" || err.type==="server-error" || err.type==="socket-error"){
+      S.status="Sin conexión con el servidor de enlace. Reintentando…"; render();
+    } else console.warn(err);
+  });
+  peer.on("disconnected", () => { setTimeout(()=>{ try{ if(S.peer===peer && !peer.destroyed) peer.reconnect(); }catch(e){} }, 1500); });
+}
+
+function onGuestConn(conn){
     conn.on("data", msg => {
       if (!msg || typeof msg!=="object") return;
       if (msg.type==="hello"){
@@ -336,16 +432,6 @@ function hostRoom(code, restored, hostId){
       } else if (msg.type==="act" && conn._pid) applyAction(conn._pid, msg.action);
     });
     conn.on("close", () => { if (conn._pid && S.conns.get(conn._pid)===conn){ S.conns.delete(conn._pid); broadcast(); } });
-  });
-  peer.on("error", err => {
-    if (err.type==="unavailable-id"){
-      if (restored){ S.myId=rid(12); tab.set("pc_cid", S.myId); joinRoom(code); }
-      else hostRoom(newCode());
-    } else if (err.type==="network" || err.type==="server-error" || err.type==="socket-error"){
-      S.status="Sin conexión con el servidor de enlace. Reintentando…"; render();
-    } else console.warn(err);
-  });
-  peer.on("disconnected", () => { setTimeout(()=>{ try{ if(S.peer===peer && !peer.destroyed) peer.reconnect(); }catch(e){} }, 1500); });
 }
 
 /* ======================================================
@@ -355,20 +441,38 @@ function joinRoom(code){
   cleanup();
   S.isHost=false; S.code=code; S.view="room"; S.room=null; S.status="Conectando con la sala "+code+"…"; render();
   const peer = new Peer(PEER_OPTS); S.peer=peer;
-  const connect = () => {
-    if (S.peer!==peer || peer.destroyed) return;
-    const conn = peer.connect(PREFIX+code.toLowerCase(), {reliable:true});
-    S.conn=conn;
+  const wire = conn => {
     conn.on("open", () => {
+      conn._wasOpen=true;
       conn.send({type:"hello", id:S.myId, name:S.name});
       ls.set("pc_room", code); ls.set("pc_role","guest"); setUrl(code); S.status=""; render();
     });
     conn.on("data", msg => {
+      if (!msg || typeof msg!=="object") return;
       if (msg.type==="state"){ S.status=""; setRoom(msg.state); }
       else if (msg.type==="toast") toast(msg.msg);
       else if (msg.type==="closed"){ toast("El creador ha cerrado la sala."); goHome(); }
     });
-    conn.on("close", () => { if (S.conn===conn && S.view==="room"){ S.status="Se ha perdido la conexión. Reintentando…"; render(); retry(); } });
+    conn.on("close", () => {
+      if (S.conn!==conn || S.view!=="room") return;
+      if (!conn._relay && !conn._wasOpen && relayOk()) return useRelay();
+      S.status="Se ha perdido la conexión. Reintentando…"; render(); retry();
+    });
+  };
+  // La conexión directa no abre (datos móviles, NAT estricto…): pasamos al relé
+  const useRelay = () => {
+    if (S.peer!==peer || peer.destroyed) return;
+    const old=S.conn; S.useRelay=true; S.conn=null;
+    if (old && !old._relay){ try { old.close(); } catch(e){} }
+    if (!S.room){ S.status="Conectando por internet con la sala "+code+"…"; render(); }
+    relayGuest(code, wire);
+  };
+  const connect = () => {
+    if (S.peer!==peer || peer.destroyed) return;
+    if (S.useRelay) return useRelay();
+    const conn = peer.connect(PREFIX+code.toLowerCase(), {reliable:true});
+    S.conn=conn; wire(conn);
+    setTimeout(() => { if (S.conn===conn && !conn.open && relayOk()) useRelay(); }, RTC_WAIT_MS);
   };
   const retry = () => { clearTimeout(S.retryT); S.retryT=setTimeout(connect, 2500); };
   peer.on("open", connect);
@@ -390,6 +494,7 @@ function act(action){
 
 function cleanup(){
   clearTimeout(S.retryT);
+  relayStop(); S.useRelay=false;
   if (S.peer){ try{ S.peer.destroy(); }catch(e){} }
   S.peer=null; S.conn=null; S.conns=new Map(); S.state=null; S.room=null; S.sel=-1; S.lastRevealed=null;
 }
