@@ -141,6 +141,18 @@ details.rules p{margin:8px 0;color:var(--muted);font-size:15px}
 .row{display:flex;gap:8px;align-items:center}
 .row .field{flex:1}
 .count{width:74px;flex:none;text-align:center}
+.c.marked{box-shadow:inset 0 0 0 3px var(--focus),inset 0 -3px 0 rgba(0,0,0,.12)}
+.spy .c.marked{transform:none}
+.c .mk{position:absolute;top:2px;right:2px;display:flex;gap:2px;font-style:normal}
+.c .mk b{font:700 9px/1 Barlow,sans-serif;background:var(--focus);color:#1a1300;border-radius:4px;padding:2px 3px}
+.chat{margin-top:12px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:10px 12px}
+.chat.r{border-left:4px solid var(--red)}.chat.b{border-left:4px solid var(--blue)}
+.chat h3{margin:0 0 6px;font:700 18px/1.1 "Barlow Condensed",sans-serif}
+.chat h3 small{font:500 12px Barlow,sans-serif;color:var(--muted);margin-left:4px}
+.msgs{list-style:none;margin:0 0 8px;padding:0;max-height:160px;overflow-y:auto;font-size:15px}
+.msgs li{padding:3px 0}
+.msgs li b{margin-right:4px}
+.msgs li.mine b{color:var(--muted)}
 .feed{list-style:none;margin:12px 0 0;padding:0;font-size:14px;color:var(--muted)}
 .feed li{padding:3px 0;border-top:1px solid var(--line)}
 .feed b.r{color:var(--red)}.feed b.b{color:var(--blue)}
@@ -160,8 +172,6 @@ details.rules p{margin:8px 0;color:var(--muted);font-size:15px}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>if(typeof Peer==="undefined")document.write('<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"><\/script>');</script>
-<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
-<script>if(typeof mqtt==="undefined")document.write('<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"><\/script>');</script>
 </head>
 <body>
 <div class="wrap" id="app"></div>
@@ -170,7 +180,7 @@ details.rules p{margin:8px 0;color:var(--muted);font-size:15px}
 (function(){
 "use strict";
 
-const WORDS = [...new Set(("agua aguja ala alfombra alma ancla ángel anillo araña árbol arco arena armadura ataúd avión azúcar balón banco bandera barco barra batería bota botella brújula bruja caballo cabeza cadena caja cama cámara campana canal cangrejo cañón capa cara carta casco castillo cebolla centro cepillo cerdo cine cinta círculo cocina cohete cola columna cometa concha copa corazón corona correo cuchillo cuello cuerda dado delfín diamante diente dragón ducha enano escala escoba espada espejo estrella fantasma faro flauta foco fuego fuente gato gigante globo gota grano grúa guante hielo hoja hongo horno hospital huevo iglesia imán isla jardín jefe jirafa juego ladrón lámpara lápiz láser león letra libro lima limón lince llave lobo luna madre mago mano manzana mapa mar marco máscara mesa metro miel mina momia mono montaña moneda motor muñeca música nave nieve nota nube ojo ola olla oro oso palma pan papel paracaídas pasta pato pegamento peine película pez piano pico pie piedra pila piloto pirata pista planta plato playa pluma policía pozo puente puerta pulpo queso radio raíz rana rata rayo red regla reina reloj rey robot roca rosa rueda sal salto satélite serpiente silla sirena sol sombra sombrero submarino taladro tambor teatro tela teléfono tenedor tiburón tiempo tierra tigre tijera tinta toro torre tortuga trébol tren trompeta tubo uña vacuna vampiro vaso vela ventana vino violín volcán zapato zorro abanico aceite aduana alambre almohada antena arpa asiento bala ballena bañera barba bigote bolsa bombilla bosque botón bufanda burbuja caramelo carnaval cartera cebra cereza chispa cifra cinturón cuadro cubo desierto disfraz ducado eclipse escudo esquí estatua fábrica feria flecha frontera galleta gallina garaje granja hada hamaca helado hormiga invierno jaula ladrillo laguna látigo lazo maleta mantel mármol medalla mercado mochila molino murciélago naranja nido ombligo orquesta paraguas pantalla pañuelo patín perla pincel pingüino pirámide plátano pólvora potro premio pulsera radar raqueta receta refugio sartén selva semilla señal sello sobre sótano taza telaraña templo tesoro tienda timbre tobogán trampa trono túnel uva valla vapor vía yate yema").split(/\s+/))];
+const WORDS = [...new Set(("agua aguja ala alfombra alma ancla ángel anillo araña árbol arco arena armadura ataúd avión azúcar balón banco bandera barco barra batería bota botella brújula bruja caballo cabeza cadena caja cama cámara campana canal cangrejo cañón capa cara carta casco castillo cebolla centro cepillo cerdo cine cinta círculo cocina cohete cola columna cometa concha copa corazón corona correo cuchillo cuello cuerda dado delfín diamante diente dragón ducha enano escala escoba espada espejo estrella fantasma faro flauta foco fuego fuente gato gigante globo gota grano grúa guante hielo hoja hongo horno hospital huevo iglesia imán isla jardín jefe jirafa juego ladrón lámpara lápiz láser león letra libro lima limón lince llave lobo luna madre mago mano manzana mapa mar marco máscara mesa metro miel mina momia mono montaña moneda motor muñeca música nave nieve nota nube ojo ola olla oro oso palma pan papel paracaídas pasta pato pegamento peine película pez piano pico pie piedra pila piloto pirata pista planta plato playa pluma policía pozo puente puerta pulpo queso radio raíz rana rata rayo red regla reina reloj rey robot roca rosa rueda sal salto satélite serpiente silla sirena sol sombra sombrero submarino taladro tambor teatro tela teléfono tenedor tiburón tiempo tierra tigre tijera tinta toro torre tortuga trébol tren trompeta tubo uña vacuna vampiro vaso vela ventana vino violín volcán zapato zorro abanico aceite aduana alambre almohada antena arpa asiento bala ballena bañera barba bigote bolsa bombilla bosque botón bufanda burbuja caramelo carnaval cartera cebra cereza chispa cifra cinturón cuadro cubo desierto disfraz ducado eclipse escudo esquí estatua fábrica feria flecha frontera galleta gallina garaje granja hada hamaca helado hormiga invierno jaula ladrillo laguna látigo lazo maleta mantel mármol medalla mercado mochila molino murciélago naranja nido ombligo orquesta paraguas pantalla pañuelo patín perla pincel pingüino pirámide plátano pólvora potro premio pulsera radar raqueta receta refugio sartén selva semilla señal sello sobre sótano taza telaraña templo tesoro tienda timbre tobogán trampa trono túnel uva valla vapor vía yate yema abeja águila alce almeja anguila antílope ardilla avestruz avispa babosa bisonte búfalo búho buitre burro cabra caimán calamar camaleón camello canario canguro caracol castor chacal ciervo cigüeña cisne cobra cocodrilo codorniz colibrí conejo cordero cotorra cucaracha cuervo erizo escarabajo escorpión foca gacela gallo ganso garza gaviota gorila gorrión grillo guepardo gusano halcón hámster hiena hipopótamo jabalí jaguar koala langosta lagarto lechuza leopardo libélula llama loro mamut mapache mariposa medusa mejillón mofeta mosca mosquito mula nutria oca orca oveja pantera paloma pavo pelícano perdiz perro piraña polilla puma pulga rinoceronte ruiseñor salmón saltamontes sapo sardina trucha unicornio vaca yegua atún bacalao gamba ostra dinosaurio oruga lombriz camarón morsa panda perico aceituna ajo albóndiga alcachofa almendra arroz avellana bocadillo berenjena bizcocho brócoli calabaza canela carne castaña cereal champiñón chocolate chorizo churro coco col coliflor croqueta empanada ensalada espinaca fideo flan fresa garbanzo guisante hamburguesa harina higo jamón judía kiwi leche lechuga lenteja mango mantequilla melocotón melón mermelada mostaza nata nuez paella patata pepino pera perejil pimienta pimiento piña pizza pollo pomelo puerro rábano salchicha salsa sandía sopa tarta tomate tortilla turrón yogur zanahoria vinagre mayonesa palomitas magdalena cruasán gazpacho aguacate cacahuete ciruela frambuesa arándano granada pistacho caviar abrelatas alarma albornoz altavoz armario aspiradora balde balanza bandeja banqueta barril basura baúl bicicleta billete bombo borrador brocha buzón cafetera cajón calcetín calculadora calendario camisa camiseta candado cántaro carpeta carretilla cartel cazo cenicero cerilla cesta chaleco chaqueta chimenea cojín collar colchón cómoda cortina cremallera cuaderno cubierto cuchara cuenco dedal despertador destornillador diario enchufe escalera escritorio esponja estante estufa etiqueta falda frigorífico gafas gorra grapadora grifo guitarra hacha horquilla impresora interruptor jarra jabón jersey lavadora linterna llavero maceta manguera manta maquillaje martillo mechero microondas monedero mueble navaja nevera ordenador pala pantalón percha persiana pijama pinza plancha portátil pañal peluca rastrillo regadera revista rotulador sábana sacapuntas sierra sillón sofá sombrilla sortija taburete tapón tarjeta tazón televisor termómetro tetera tiza toalla tornillo tostadora tuerca ventilador zapatilla cuna biberón chupete peluche puzle yoyó canica muñeco pelota tablero ficha naipe dardo diana trofeo pancarta abrigo bolso sandalia corbata pendiente gorro cartucho pegatina lupa prismáticos telescopio microscopio cronómetro metrónomo aeropuerto aldea almacén avenida ayuntamiento balcón barrio biblioteca bodega cabaña calle cárcel carretera catedral cementerio colegio comisaría cueva estación estadio farmacia gimnasio gasolinera glaciar hotel huerto instituto jungla laboratorio lago mansión mazmorra mezquita monasterio museo oasis oficina palacio panadería parque pasillo plaza prisión puerto rascacielos restaurante río ruina sauna supermercado terraza tejado universidad valle zoo acantilado bahía cascada colina costa cráter delta duna estrecho golfo llanura meseta pantano península pradera arrecife cumbre cordillera iceberg ático buhardilla azotea despacho salón comedor dormitorio baño establo granero muelle embarcadero fortaleza muralla foso autopista rotonda semáforo acera callejón quiosco circo parlamento embajada casino discoteca cafetería bar pizzería heladería librería joyería ferretería peluquería carnicería pescadería frutería abogado actor agricultor albañil alcalde arquitecto artista astronauta atleta azafata bailarín bombero boxeador buzo cajero camarero cantante capitán carpintero cartero cazador científico cirujano cocinero conductor detective dentista diseñador doctor electricista enfermera escritor escultor fontanero fotógrafo general granjero guardia guía ingeniero jardinero juez jugador leñador maestro marinero mecánico médico minero monje músico niñera panadero payaso peluquero periodista pescador pintor poeta presidente profesor programador príncipe princesa sacerdote sastre secretario soldado taxista torero vaquero veterinario vigilante abuelo abuela bebé niño hermano primo tío novio vecino amigo héroe villano caballero samurái ninja vikingo faraón emperador duque conde mendigo millonario turista explorador inventor brujo hechicero duende elfo ogro trol zombi extraterrestre monstruo gnomo centauro cíclope fénix hidra minotauro pegaso yeti agujero aire arcoíris asteroide átomo aurora bacteria brisa calor carbón célula cobre cristal energía galaxia gas granizo hierro huracán lava lluvia magma meteorito molécula neblina niebla oxígeno ozono planeta plata plomo polvo primavera relámpago rocío sequía terremoto tormenta tornado trueno universo verano otoño viento zafiro rubí esmeralda ámbar coral cuarzo mercurio saturno júpiter marte venus plutón órbita gravedad luz frío humo ceniza brasa musgo helecho cactus bambú girasol tulipán margarita orquídea lirio amapola clavel jazmín lavanda roble pino olivo palmera sauce abeto almendro ciprés tronco rama flor pétalo espina hierba césped trigo maíz algodón lino seda lana cuero madera cartón plástico vidrio acero bronce barro arcilla barriga boca brazo cadera ceja cerebro codo costilla dedo espalda estómago frente garganta hombro hueso labio lengua mejilla músculo nariz nuca oreja pelo pestaña pierna piel pulmón rodilla sangre talón tobillo vena esqueleto calavera cicatriz trenza coleta peca lunar ambulancia autobús barca camión canoa carro carroza coche dirigible furgoneta góndola helicóptero kayak limusina locomotora moto patinete remolque taxi tractor tranvía trineo velero zepelín ovni balsa ferri crucero vagón timón remo mástil hélice freno volante maletero gasolina amor aventura batalla broma carrera ciudad clase código concierto concurso crimen cuento deporte destino dinero error examen éxito fama fiesta fortuna futuro guerra historia honor idea idioma justicia ley leyenda libertad magia memoria miedo misión misterio moda mundo nación noche día orden paz pasado peligro poder pregunta problema promesa prueba récord regalo riesgo ritmo robo rumor secreto silencio sueño suerte tarea trabajo truco valor verdad viaje victoria vida voz eco grito risa beso abrazo susto cosquillas sorpresa apuesta vacaciones boda cumpleaños navidad verbena gol penalti partido liga podio maratón ajedrez dominó parchís póquer bingo lotería quiniela ruleta rompecabezas laberinto enigma acertijo contraseña mensaje telegrama saxofón acordeón gaita órgano micrófono disco vinilo foto escultura mural grafiti poema novela cómic periódico noticia anuncio serie dibujo ópera ballet tango flamenco rap rock jazz vals aplicación cable chip consola dron internet móvil píxel ratón servidor tableta teclado virus wifi web clic enlace archivo misil sónar bañador biquini blusa calzoncillo capucha chándal delantal esmoquin kimono poncho sudadera tirantes traje uniforme vestido zueco chancla boina diadema tiara velo lanza ballesta catapulta").split(/\s+/))];
 const TEAM_NAME = {r:"Rojo", b:"Azul"};
 const other = t => t === "r" ? "b" : "r";
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -179,11 +189,6 @@ const PREFIX = "palabraclave-keisy-v1-";
 const PEER_OPTS = { config:{ iceServers:[
   {urls:"stun:stun.l.google.com:19302"},{urls:"stun:stun1.l.google.com:19302"},
   {urls:"stun:stun.cloudflare.com:3478"} ] } };
-/* Relé por internet: si la conexión directa (WebRTC) no abre —típico con datos
-   móviles o redes distintas—, los mensajes viajan por un broker MQTT público. */
-const RELAY_URL = "wss://broker.emqx.io:8084/mqtt";
-const RELAY_TOPIC = "palabraclave-keisy-v1/";
-const RTC_WAIT_MS = 7000, RELAY_PING_MS = 5000, RELAY_DEAD_MS = 16000;
 
 const ls = {
   get(k){ try { return sessionStorage.getItem(k) || localStorage.getItem(k) || ""; } catch(e){ return ""; } },
@@ -199,8 +204,7 @@ let myId = tab.get("pc_cid"); if (!myId){ myId = rid(12); tab.set("pc_cid", myId
 /* ---------- Estado local ---------- */
 const S = { myId, name: ls.get("pc_name"), view:"home", code:"", isHost:false,
   peer:null, conn:null, conns:new Map(), state:null, room:null, status:"",
-  sel:-1, draft:{}, lastRevealed:null, retryT:null, wake:null,
-  mq:null, mqSubs:new Map(), relayIn:new Map(), relayT:null, useRelay:false };
+  sel:-1, draft:{}, lastRevealed:null, retryT:null, wake:null };
 S.draft.name = S.name;
 
 const $app = document.getElementById("app");
@@ -211,84 +215,9 @@ function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg
 function shuffle(a){ a=a.slice(); for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
 
 /* ======================================================
-   RELÉ MQTT: imita la interfaz de una conexión de PeerJS
-   (open, send, close, on("open"|"data"|"close"))
-   ====================================================== */
-function relayOk(){ return typeof mqtt!=="undefined"; }
-function relayTopic(code, sub){ return RELAY_TOPIC+code.toLowerCase()+"/"+sub; }
-function relayStart(){
-  if (S.mq) return;
-  S.mq = mqtt.connect(RELAY_URL, { clientId:"pc_"+rid(12), clean:true, reconnectPeriod:2000, connectTimeout:8000 });
-  S.mq.on("connect", () => { for (const t of S.mqSubs.keys()) S.mq.subscribe(t); });
-  S.mq.on("message", (t, payload) => {
-    const fn=S.mqSubs.get(t); if (!fn) return;
-    let m; try { m=JSON.parse(payload.toString()); } catch(e){ return; }
-    if (m && typeof m==="object") fn(m);
-  });
-  S.mq.on("error", e => console.warn("relé:", e && e.message));
-}
-function relaySub(t, fn){ S.mqSubs.set(t, fn); if (S.mq && S.mq.connected) S.mq.subscribe(t); }
-function relayPub(t, obj){ if (S.mq) { try { S.mq.publish(t, JSON.stringify(obj)); } catch(e){} } }
-function relayConn(topic, extra){
-  const c = { open:false, _relay:true, _closed:false, _seen:Date.now(), _h:{},
-    on(ev, fn){ (this._h[ev]=this._h[ev]||[]).push(fn); return this; },
-    _emit(ev, arg){ for (const fn of this._h[ev]||[]) { try { fn(arg); } catch(e){ console.warn(e); } } },
-    raw(obj){ relayPub(topic, {...extra, ...obj}); },
-    send(msg){ if (this.open) this.raw({msg}); },
-    close(){ if (this._closed) return; this._closed=true; this.open=false; clearInterval(this._iv); setTimeout(()=>this._emit("close"), 0); } };
-  return c;
-}
-function relayStop(){
-  clearInterval(S.relayT); S.relayT=null;
-  for (const c of S.relayIn.values()) c.close();
-  if (S.conn && S.conn._relay) S.conn.close();
-  if (S.mq){ try { S.mq.end(false); } catch(e){} }
-  S.mq=null; S.mqSubs=new Map(); S.relayIn=new Map();
-}
-/* Anfitrión: escucha en <sala>/h y responde a cada invitado en <sala>/g/<id> */
-function relayHost(code){
-  if (!relayOk()) return;
-  relayStart();
-  relaySub(relayTopic(code,"h"), m => {
-    const pid=String(m.from||"").slice(0,24); if (!pid || pid===S.myId || !S.state) return;
-    let c=S.relayIn.get(pid);
-    if (!c || c._closed){
-      const back=relayTopic(code,"g/"+pid);
-      if (!(m.msg && m.msg.type==="hello")) return relayPub(back, {who:1});
-      c=relayConn(back, {}); c.open=true; S.relayIn.set(pid, c); onGuestConn(c);
-    }
-    c._seen=Date.now();
-    if (m.ping) c.raw({pong:1});
-    else if (m.msg) c._emit("data", m.msg);
-  });
-  clearInterval(S.relayT);
-  S.relayT=setInterval(() => {
-    for (const [pid,c] of S.relayIn) if (Date.now()-c._seen>RELAY_DEAD_MS){ S.relayIn.delete(pid); c.close(); }
-  }, RELAY_PING_MS);
-}
-/* Invitado: envía a <sala>/h y escucha en <sala>/g/<miId> */
-function relayGuest(code, wire){
-  relayStart();
-  const c=relayConn(relayTopic(code,"h"), {from:S.myId});
-  S.conn=c; wire(c);
-  relaySub(relayTopic(code,"g/"+S.myId), m => {
-    if (S.conn!==c || c._closed) return;
-    c._seen=Date.now();
-    if (m.who) return c.raw({msg:{type:"hello", id:S.myId, name:S.name}});
-    if (!c.open){ c.open=true; c._emit("open"); }
-    if (m.msg) c._emit("data", m.msg);
-  });
-  c.raw({ping:1});
-  c._iv=setInterval(() => {
-    if (c.open && Date.now()-c._seen>RELAY_DEAD_MS) return c.close();
-    c.raw({ping:1});
-  }, RELAY_PING_MS);
-}
-
-/* ======================================================
    ANFITRIÓN: guarda el estado real y lo reparte
    ====================================================== */
-function blankGame(){ return {status:"lobby", words:[], key:[], revealed:[], turn:"", clue:{word:"",count:0,team:"",carry:0}, pending:{r:0,b:0},
+function blankGame(){ return {status:"lobby", words:[], key:[], revealed:[], turn:"", clue:{word:"",count:0,team:"",carry:0}, pending:{r:0,b:0}, marks:{}, chat:{r:[],b:[]},
   guessesLeft:0, winner:"", reason:"", log:[]}; }
 
 function remainingOf(st){
@@ -301,6 +230,10 @@ function viewFor(pid){
   v.rem = remainingOf(st);
   v.timeLeft = st.deadline ? Math.max(0, st.deadline-Date.now()) : 0; delete v.deadline;
   if (!seeKey) v.key = st.key.map((k,i)=> st.revealed[i] ? k : null);
+  const isAgent = p && p.team && p.role==="op";
+  v.chat = isAgent ? ((st.chat||{})[p.team]||[]) : [];
+  v.marks = {};
+  if (isAgent && p.team===st.turn) for (const [id,i] of Object.entries(st.marks||{})) if (i>=0 && st.players[id]) (v.marks[i]=v.marks[i]||[]).push({id, name:st.players[id].name});
   for (const [id,pl] of Object.entries(v.players)) pl.online = id===S.myId ? true : !!(S.conns.get(id) && S.conns.get(id).open);
   return v;
 }
@@ -316,11 +249,22 @@ function canGuess(st, p){
   if (!p || !p.team || p.team!==st.turn) return false;
   return p.role==="op";
 }
+const RECENT_GAMES = 10;
+function pickWords(){
+  let hist=[]; try { hist=JSON.parse(localStorage.getItem("pc_recent")||"[]"); } catch(e){}
+  if (!Array.isArray(hist)) hist=[];
+  const used=new Set(hist.slice(-RECENT_GAMES).flat());
+  let pool=WORDS.filter(w=>!used.has(w)); if (pool.length<25) pool=WORDS;
+  const words=shuffle(pool).slice(0,25);
+  hist.push(words); hist=hist.slice(-RECENT_GAMES);
+  try { localStorage.setItem("pc_recent", JSON.stringify(hist)); } catch(e){}
+  return words;
+}
 function endTurn(st, leftover){
   const t=st.turn;
   if (!st.pending) st.pending={r:0,b:0};
   st.pending[t] = leftover>0 && leftover<90 ? leftover : 0;
-  st.turn=other(t); st.clue={word:"",count:0,team:"",carry:0}; st.guessesLeft=0; st.deadline=0;
+  st.turn=other(t); st.clue={word:"",count:0,team:"",carry:0}; st.guessesLeft=0; st.deadline=0; st.marks={};
 }
 function applyAction(pid, a){
   const st=S.state, p=st.players[pid];
@@ -342,7 +286,7 @@ function applyAction(pid, a){
       }
       const start = Math.random()<.5 ? "r" : "b";
       Object.assign(st, blankGame(), { status:"playing", round:(st.round||0)+1,
-        words: shuffle(WORDS).slice(0,25),
+        words: pickWords(),
         key: shuffle([...Array(9).fill(start), ...Array(8).fill(other(start)), ...Array(7).fill("n"), "a"]),
         revealed: Array(25).fill(false), turn:start });
       addLog(start, "Empieza el equipo "+TEAM_NAME[start]+".");
@@ -366,6 +310,7 @@ function applyAction(pid, a){
       const i=a.i|0;
       if (st.status!=="playing" || !canGuess(st,p) || !st.clue.word || i<0 || i>24 || st.revealed[i]) return;
       st.revealed[i]=true;
+      if (st.marks) for (const k in st.marks) if (st.marks[k]===i) st.marks[k]=-1;
       const card=st.key[i], t=st.turn, rem=remainingOf(st);
       const kind={r:"roja", b:"azul", n:"neutral", a:"¡el asesino!"}[card];
       addLog(t, `${esc(p.name)} descubre ${esc(st.words[i].toUpperCase())}: ${kind}`);
@@ -381,6 +326,21 @@ function applyAction(pid, a){
       if (st.status!=="playing" || !canGuess(st,p) || !st.clue.word) return;
       addLog(st.turn, `${esc(p.name)} pasa el turno.`);
       endTurn(st, st.guessesLeft); break;
+    }
+    case "mark": {
+      const i=a.i|0;
+      if (st.status!=="playing" || !canGuess(st,p) || !st.clue.word || i<0 || i>24 || st.revealed[i]) return;
+      if (!st.marks) st.marks={};
+      st.marks[pid] = st.marks[pid]===i ? -1 : i;
+      break;
+    }
+    case "chat": {
+      const text=String(a.text||"").trim().slice(0,200);
+      if (!text || !p.team || p.role!=="op") return;
+      if (!st.chat) st.chat={r:[],b:[]};
+      st.chat[p.team].push({t:Date.now(), id:pid, name:p.name, text});
+      if (st.chat[p.team].length>60) st.chat[p.team].shift();
+      break;
     }
     case "leave": p.active=false; break;
     default: return;
@@ -399,21 +359,8 @@ function hostRoom(code, restored, hostId){
     S.state.players[S.myId] = { ...(S.state.players[S.myId]||{team:"",role:"op"}), name:S.name, active:true };
     ls.set("pc_room", code); ls.set("pc_role","host"); S.status="";
     setUrl(code); keepAwake(); broadcast();
-    relayHost(code);
   });
-  peer.on("connection", onGuestConn);
-  peer.on("error", err => {
-    if (err.type==="unavailable-id"){
-      if (restored){ S.myId=rid(12); tab.set("pc_cid", S.myId); joinRoom(code); }
-      else hostRoom(newCode());
-    } else if (err.type==="network" || err.type==="server-error" || err.type==="socket-error"){
-      S.status="Sin conexión con el servidor de enlace. Reintentando…"; render();
-    } else console.warn(err);
-  });
-  peer.on("disconnected", () => { setTimeout(()=>{ try{ if(S.peer===peer && !peer.destroyed) peer.reconnect(); }catch(e){} }, 1500); });
-}
-
-function onGuestConn(conn){
+  peer.on("connection", conn => {
     conn.on("data", msg => {
       if (!msg || typeof msg!=="object") return;
       if (msg.type==="hello"){
@@ -432,6 +379,16 @@ function onGuestConn(conn){
       } else if (msg.type==="act" && conn._pid) applyAction(conn._pid, msg.action);
     });
     conn.on("close", () => { if (conn._pid && S.conns.get(conn._pid)===conn){ S.conns.delete(conn._pid); broadcast(); } });
+  });
+  peer.on("error", err => {
+    if (err.type==="unavailable-id"){
+      if (restored){ S.myId=rid(12); tab.set("pc_cid", S.myId); joinRoom(code); }
+      else hostRoom(newCode());
+    } else if (err.type==="network" || err.type==="server-error" || err.type==="socket-error"){
+      S.status="Sin conexión con el servidor de enlace. Reintentando…"; render();
+    } else console.warn(err);
+  });
+  peer.on("disconnected", () => { setTimeout(()=>{ try{ if(S.peer===peer && !peer.destroyed) peer.reconnect(); }catch(e){} }, 1500); });
 }
 
 /* ======================================================
@@ -441,38 +398,20 @@ function joinRoom(code){
   cleanup();
   S.isHost=false; S.code=code; S.view="room"; S.room=null; S.status="Conectando con la sala "+code+"…"; render();
   const peer = new Peer(PEER_OPTS); S.peer=peer;
-  const wire = conn => {
+  const connect = () => {
+    if (S.peer!==peer || peer.destroyed) return;
+    const conn = peer.connect(PREFIX+code.toLowerCase(), {reliable:true});
+    S.conn=conn;
     conn.on("open", () => {
-      conn._wasOpen=true;
       conn.send({type:"hello", id:S.myId, name:S.name});
       ls.set("pc_room", code); ls.set("pc_role","guest"); setUrl(code); S.status=""; render();
     });
     conn.on("data", msg => {
-      if (!msg || typeof msg!=="object") return;
       if (msg.type==="state"){ S.status=""; setRoom(msg.state); }
       else if (msg.type==="toast") toast(msg.msg);
       else if (msg.type==="closed"){ toast("El creador ha cerrado la sala."); goHome(); }
     });
-    conn.on("close", () => {
-      if (S.conn!==conn || S.view!=="room") return;
-      if (!conn._relay && !conn._wasOpen && relayOk()) return useRelay();
-      S.status="Se ha perdido la conexión. Reintentando…"; render(); retry();
-    });
-  };
-  // La conexión directa no abre (datos móviles, NAT estricto…): pasamos al relé
-  const useRelay = () => {
-    if (S.peer!==peer || peer.destroyed) return;
-    const old=S.conn; S.useRelay=true; S.conn=null;
-    if (old && !old._relay){ try { old.close(); } catch(e){} }
-    if (!S.room){ S.status="Conectando por internet con la sala "+code+"…"; render(); }
-    relayGuest(code, wire);
-  };
-  const connect = () => {
-    if (S.peer!==peer || peer.destroyed) return;
-    if (S.useRelay) return useRelay();
-    const conn = peer.connect(PREFIX+code.toLowerCase(), {reliable:true});
-    S.conn=conn; wire(conn);
-    setTimeout(() => { if (S.conn===conn && !conn.open && relayOk()) useRelay(); }, RTC_WAIT_MS);
+    conn.on("close", () => { if (S.conn===conn && S.view==="room"){ S.status="Se ha perdido la conexión. Reintentando…"; render(); retry(); } });
   };
   const retry = () => { clearTimeout(S.retryT); S.retryT=setTimeout(connect, 2500); };
   peer.on("open", connect);
@@ -494,7 +433,6 @@ function act(action){
 
 function cleanup(){
   clearTimeout(S.retryT);
-  relayStop(); S.useRelay=false;
   if (S.peer){ try{ S.peer.destroy(); }catch(e){} }
   S.peer=null; S.conn=null; S.conns=new Map(); S.state=null; S.room=null; S.sel=-1; S.lastRevealed=null;
 }
@@ -550,6 +488,7 @@ function render(){
   else if (!S.room) $app.innerHTML = `${topHTML()}<p class="muted center" style="margin-top:30vh">${esc(S.status||"Cargando…")}</p>`;
   else $app.innerHTML = (S.status?`<div class="banner">${esc(S.status)}</div>`:"") + (S.room.status==="lobby" ? lobbyHTML(S.room) : gameHTML(S.room));
   for (const [id,val] of Object.entries(S.draft)){ const el=document.getElementById(id); if (el && "value" in el) el.value=val; }
+  const msgs=document.getElementById("msgs"); if (msgs) msgs.scrollTop=msgs.scrollHeight;
   if (focusId){ const el=document.getElementById(focusId); if (el){ el.focus(); try{ if(caret!=null) el.setSelectionRange(caret,caret);}catch(e){} } }
 }
 
@@ -612,6 +551,7 @@ function lobbyHTML(r){
 
 function gameHTML(r){
   const m=me(r), rem=r.rem||{r:0,b:0}, rev=r.revealed||[];
+  let myMark=-1; for (const [i,l] of Object.entries(r.marks||{})) if (l.some(x=>x.id===S.myId)) myMark=+i;
   const isSpy = (m && m.role==="spy" && m.team) || r.status==="ended";
   const myTurnOp = m && r.status==="playing" && canGuess(r, m) && r.clue.word;
   const ps=players(r);
@@ -634,10 +574,11 @@ function gameHTML(r){
   const prev=S.lastRevealed, now=rev.slice(); S.lastRevealed=now;
   const board=(r.words||[]).map((w,i)=>{
     const k=r.key[i], v=rev[i], cls=["c"];
-    if (k && (isSpy||v)) cls.push("k"+k); if (v) cls.push("v"); if (S.sel===i) cls.push("sel");
+    if (k && (isSpy||v)) cls.push("k"+k); if (v) cls.push("v"); const mk=(r.marks||{})[i]||[]; const mine=mk.some(x=>x.id===S.myId);
+    if (mine) cls.push("sel"); else if (mk.length) cls.push("marked");
     if (v && prev && !prev[i]) cls.push("flash");
     const can = myTurnOp && !v;
-    return `<button class="${cls.join(" ")}" data-act="card" data-i="${i}" ${can?"":"disabled"} aria-label="${esc(w)}${v?", descubierta":""}"><span>${esc(w)}</span></button>`;
+    return `<button class="${cls.join(" ")}" data-act="card" data-i="${i}" ${can?"":"disabled"} aria-label="${esc(w)}${v?", descubierta":""}${mk.length?", marcada por "+mk.map(x=>x.name).join(", "):""}"><span>${esc(w)}</span>${mk.length&&!v?`<em class="mk">${mk.map(x=>`<b>${esc(x.name.slice(0,2).toUpperCase())}</b>`).join("")}</em>`:""}</button>`;
   }).join("");
 
   let panel="";
@@ -655,7 +596,7 @@ function gameHTML(r){
       <select class="field count" id="clueCount" data-draft="clueCount" aria-label="Número">${["0","1","2","3","4","5","6","7","8","9","∞"].map(n=>`<option ${n==="1"?"selected":""}>${n}</option>`).join("")}</select></div>
       <button class="btn ${r.turn==="r"?"red":"blue"}" data-act="clue">Dar pista</button></div>`;
   } else if (myTurnOp){
-    panel = `<div class="panel stack"><p>${S.sel>=0?`¿Seguro? Toca <strong>${esc(r.words[S.sel].toUpperCase())}</strong> otra vez para descubrirla.`:"Toca una carta para elegirla y otra vez para descubrirla."}</p>
+    panel = `<div class="panel stack"><p>${myMark>=0?`¿Seguro? Toca <strong>${esc(r.words[myMark].toUpperCase())}</strong> otra vez para descubrirla.`:"Toca una carta para marcarla (tu equipo la verá) y otra vez para descubrirla."}</p>
       <button class="btn ghost" data-act="pass">Terminar turno</button></div>`;
   } else {
     const txt = m.role==="spy"
@@ -664,6 +605,11 @@ function gameHTML(r){
     panel = `<div class="panel"><p>${txt}</p></div>`;
   }
 
+  const chatBox = (m && m.team && m.role==="op") ? `<section class="chat ${m.team}" aria-label="Chat del equipo">
+      <h3>Chat del equipo ${TEAM_NAME[m.team]} <small>solo agentes</small></h3>
+      <ul class="msgs" id="msgs">${(r.chat||[]).slice(-30).map(c=>`<li class="${c.id===S.myId?"mine":""}"><b>${esc(c.name)}</b> ${esc(c.text)}</li>`).join("")||`<li class="muted">Comentad aquí las ideas antes de destapar.</li>`}</ul>
+      <div class="row"><input class="field" id="chatText" data-draft="chatText" maxlength="200" autocomplete="off" placeholder="Escribe a tu equipo"><button class="btn sm" data-act="chat">Enviar</button></div>
+    </section>` : "";
   const feed=(r.log||[]).slice(-5).reverse().map(e=>`<li><b class="${e.team}">●</b> ${e.text}</li>`).join("");
   const roster=["r","b"].map(t=>`<div class="${t}"><strong>${TEAM_NAME[t]}</strong>${ps.filter(p=>p.team===t).map(p=>pname(p)+(p.role==="spy"?" (jefe)":"")+(p.id===S.myId?" (tú)":"")).join("<br>")||"Nadie"}</div>`).join("");
 
@@ -672,6 +618,7 @@ function gameHTML(r){
     ${clue}
     <div class="board ${isSpy?"spy":""}">${board}</div>
     ${panel}
+    ${chatBox}
     ${feed?`<ul class="feed">${feed}</ul>`:""}
     <div class="roster">${roster}</div>`;
 }
@@ -687,12 +634,18 @@ $app.addEventListener("keydown", e => {
   if (e.key!=="Enter") return;
   if (e.target.id==="joinCode") doJoin(S.draft.joinCode);
   if (e.target.id==="clueWord") doClue();
+  if (e.target.id==="chatText") sendChat();
 });
 function doJoin(code){
   code=(code||"").trim().toUpperCase();
   if (!checkName() || !peerReady()) return;
   if (code.length!==4) return toast("El código tiene 4 letras.");
   joinRoom(code);
+}
+function sendChat(){
+  const t=(S.draft.chatText||"").trim(); if (!t) return;
+  S.draft.chatText=""; const el=document.getElementById("chatText"); if (el) el.value="";
+  act({type:"chat", text:t});
 }
 function doClue(){
   const word=(S.draft.clueWord||"").trim(), raw=S.draft.clueCount||"1";
@@ -720,7 +673,9 @@ $app.addEventListener("click", async e => {
   else if (a==="lobby") act({type:"lobby"});
   else if (a==="clue") doClue();
   else if (a==="pass") act({type:"pass"});
-  else if (a==="card"){ const i=+b.dataset.i; if (S.sel===i){ S.sel=-1; act({type:"guess", i}); } else { S.sel=i; render(); } }
+  else if (a==="card"){ const i=+b.dataset.i, l=(S.room.marks||{})[i]||[];
+    if (l.some(x=>x.id===S.myId)) act({type:"guess", i}); else act({type:"mark", i}); }
+  else if (a==="chat") sendChat();
   else if (a==="share"){
     const url=shareLink(), text=`Únete a mi partida de Palabra Clave. Código: ${S.code}`;
     try { if (navigator.share){ await navigator.share({title:"Palabra Clave", text, url}); return; } } catch(err){ if (err && err.name==="AbortError") return; }
