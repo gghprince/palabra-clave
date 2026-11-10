@@ -170,8 +170,8 @@ details.rules p{margin:8px 0;color:var(--muted);font-size:15px}
 .off{opacity:.45}
 .banner{background:var(--focus);color:#1a1300;border-radius:10px;padding:8px 12px;font-size:14px;margin-bottom:10px;text-align:center}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
-<script>if(typeof Peer==="undefined")document.write('<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"><\/script>');</script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.14.1/dist/mqtt.min.js"></script>
+<script>if(typeof mqtt==="undefined")document.write('<script src="https://unpkg.com/mqtt@5.14.1/dist/mqtt.min.js"><\/script>');</script>
 </head>
 <body>
 <div class="wrap" id="app"></div>
@@ -185,10 +185,6 @@ const TEAM_NAME = {r:"Rojo", b:"Azul"};
 const other = t => t === "r" ? "b" : "r";
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 const TURN_MS = 60000;
-const PREFIX = "palabraclave-keisy-v1-";
-const PEER_OPTS = { config:{ iceServers:[
-  {urls:"stun:stun.l.google.com:19302"},{urls:"stun:stun1.l.google.com:19302"},
-  {urls:"stun:stun.cloudflare.com:3478"} ] } };
 
 const ls = {
   get(k){ try { return sessionStorage.getItem(k) || localStorage.getItem(k) || ""; } catch(e){ return ""; } },
@@ -234,15 +230,15 @@ function viewFor(pid){
   v.chat = isAgent ? ((st.chat||{})[p.team]||[]) : [];
   v.marks = {};
   if (isAgent && p.team===st.turn) for (const [id,i] of Object.entries(st.marks||{})) if (i>=0 && st.players[id]) (v.marks[i]=v.marks[i]||[]).push({id, name:st.players[id].name});
-  for (const [id,pl] of Object.entries(v.players)) pl.online = id===S.myId ? true : !!(S.conns.get(id) && S.conns.get(id).open);
+  for (const [id,pl] of Object.entries(v.players)) pl.online = isOnline(id);
   return v;
 }
 function broadcast(){
   ls.set("pc_host_state", JSON.stringify({code:S.code, hostId:S.myId, state:S.state, t:Date.now()}));
-  for (const [pid,c] of S.conns) if (c.open) { try { c.send({type:"state", state:viewFor(pid)}); } catch(e){} }
+  for (const pid of Object.keys(S.state.players)) if (pid!==S.myId && S.state.players[pid].active) pub(TOP.player(S.code,pid), {type:"state", state:viewFor(pid)});
   setRoom(viewFor(S.myId));
 }
-function notify(pid,msg){ if (pid===S.myId) toast(msg); else { const c=S.conns.get(pid); if (c && c.open) c.send({type:"toast", msg}); } }
+function notify(pid,msg){ if (pid===S.myId) toast(msg); else pub(TOP.player(S.code,pid), {type:"toast", msg}); }
 function addLog(team,text){ S.state.log.push({t:Date.now(),team,text}); if (S.state.log.length>40) S.state.log.shift(); }
 
 function canGuess(st, p){
@@ -348,107 +344,185 @@ function applyAction(pid, a){
   broadcast();
 }
 
-function hostRoom(code, restored, hostId){
+/* ======================================================
+   CONEXIÓN: mensajes por un servidor MQTT público (funciona
+   con wifi, datos móviles y entre redes distintas)
+   ====================================================== */
+const BROKERS = (() => {
+  const o = new URLSearchParams(location.search).get("broker");
+  return o ? [o] : ["wss://broker.emqx.io:8084/mqtt", "wss://broker.hivemq.com:8884/mqtt", "wss://test.mosquitto.org:8081"];
+})();
+const NS = "palabraclave/gghp/v2/";
+const TOP = { alive:c=>NS+c+"/alive", host:c=>NS+c+"/host", player:(c,id)=>NS+c+"/p/"+id };
+const enc = o => JSON.stringify(o);
+const dec = b => { try { return JSON.parse(typeof b==="string" ? b : new TextDecoder().decode(b)); } catch(e){ return null; } };
+
+function brokerOrder(){
+  const pref = parseInt(new URLSearchParams(location.search).get("s"),10);
+  const idx = BROKERS.map((_,i)=>i);
+  if (pref>=0 && pref<BROKERS.length){ idx.splice(idx.indexOf(pref),1); idx.unshift(pref); }
+  return idx;
+}
+function connectBroker(i, opts){
+  return new Promise(resolve => {
+    let done=false;
+    const c = mqtt.connect(BROKERS[i], Object.assign({ connectTimeout:7000, reconnectPeriod:2500, keepalive:20,
+      clean:true, clientId:"pc_"+rid(12), protocolVersion:4 }, opts||{}));
+    const fin = ok => { if (done) return; done=true; clearTimeout(t); if (!ok){ try{ c.end(true); }catch(e){} } resolve(ok?c:null); };
+    const t = setTimeout(()=>fin(false), 8000);
+    c.once("connect", ()=>fin(true));
+    c.on("error", ()=>{ if (!done) fin(false); });
+  });
+}
+/* Lee el aviso retenido de la sala (si existe) en un broker ya conectado */
+function readAlive(client, code, waitMs){
+  return new Promise(resolve => {
+    const topic=TOP.alive(code); let done=false;
+    const onMsg=(t,b)=>{ if (t!==topic || done) return; done=true; client.removeListener("message",onMsg); client.unsubscribe(topic); const m=b && b.length ? dec(b) : null; resolve(m); };
+    client.on("message", onMsg);
+    client.subscribe(topic, {qos:1});
+    setTimeout(()=>{ if (!done){ done=true; client.removeListener("message",onMsg); client.unsubscribe(topic); resolve(null); } }, waitMs);
+  });
+}
+function pub(topic, obj, retain){ if (S.mq && S.mq.connected) S.mq.publish(topic, typeof obj==="string"?obj:enc(obj), {qos:1, retain:!!retain}); }
+function aliveMsg(){ return {open:true, hostId:S.myId, t:Date.now()}; }
+
+/* ---------- ANFITRIÓN ---------- */
+async function hostRoom(code, restored, hostId){
   if (hostId){ S.myId=hostId; tab.set("pc_cid", hostId); }
   cleanup();
+  const gen = ++S.gen;
   S.isHost=true; S.code=code; S.view="room"; S.room=null; S.status="Abriendo la sala…"; render();
-  const peer = new Peer(PREFIX+code.toLowerCase(), PEER_OPTS);
-  S.peer=peer;
-  peer.on("open", () => {
-    S.state = restored || { code, round:0, players:{}, ...blankGame() };
-    S.state.players[S.myId] = { ...(S.state.players[S.myId]||{team:"",role:"op"}), name:S.name, active:true };
-    ls.set("pc_room", code); ls.set("pc_role","host"); S.status="";
-    setUrl(code); keepAwake(); broadcast();
-  });
-  peer.on("connection", conn => {
-    conn.on("data", msg => {
-      if (!msg || typeof msg!=="object") return;
-      if (msg.type==="hello"){
-        const pid=String(msg.id||"").slice(0,24); if (!pid || pid===S.myId) return;
-        conn._pid=pid;
-        const old=S.conns.get(pid); if (old && old!==conn) { try{old.close();}catch(e){} }
-        S.conns.set(pid, conn);
-        let prev=S.state.players[pid];
-        const nm=String(msg.name||"").trim().toLowerCase();
-        if (!prev && nm) for (const [oid,op] of Object.entries(S.state.players)){
-          const live = oid===S.myId || (S.conns.get(oid) && S.conns.get(oid).open);
-          if (!live && op.active && op.name.trim().toLowerCase()===nm){ prev=op; delete S.state.players[oid]; break; }
-        }
-        S.state.players[pid] = { team:prev?.team||"", role:prev?.role||"op", name:String(msg.name||"Jugador").slice(0,20), active:true };
-        broadcast();
-      } else if (msg.type==="act" && conn._pid) applyAction(conn._pid, msg.action);
-    });
-    conn.on("close", () => { if (conn._pid && S.conns.get(conn._pid)===conn){ S.conns.delete(conn._pid); broadcast(); } });
-  });
-  peer.on("error", err => {
-    if (err.type==="unavailable-id"){
-      if (restored){ S.myId=rid(12); tab.set("pc_cid", S.myId); joinRoom(code); }
-      else hostRoom(newCode());
-    } else if (err.type==="network" || err.type==="server-error" || err.type==="socket-error"){
-      S.status="Sin conexión con el servidor de enlace. Reintentando…"; render();
-    } else console.warn(err);
-  });
-  peer.on("disconnected", () => { setTimeout(()=>{ try{ if(S.peer===peer && !peer.destroyed) peer.reconnect(); }catch(e){} }, 1500); });
-}
-
-/* ======================================================
-   INVITADO: se conecta al anfitrión
-   ====================================================== */
-function joinRoom(code){
-  cleanup();
-  S.isHost=false; S.code=code; S.view="room"; S.room=null; S.status="Conectando con la sala "+code+"…"; render();
-  const peer = new Peer(PEER_OPTS); S.peer=peer;
-  const connect = () => {
-    if (S.peer!==peer || peer.destroyed) return;
-    const conn = peer.connect(PREFIX+code.toLowerCase(), {reliable:true});
-    S.conn=conn;
-    conn.on("open", () => {
-      conn.send({type:"hello", id:S.myId, name:S.name});
-      ls.set("pc_room", code); ls.set("pc_role","guest"); setUrl(code); S.status=""; render();
-    });
-    conn.on("data", msg => {
-      if (msg.type==="state"){ S.status=""; setRoom(msg.state); }
-      else if (msg.type==="toast") toast(msg.msg);
-      else if (msg.type==="closed"){ toast("El creador ha cerrado la sala."); goHome(); }
-    });
-    conn.on("close", () => { if (S.conn===conn && S.view==="room"){ S.status="Se ha perdido la conexión. Reintentando…"; render(); retry(); } });
+  let client=null, bi=-1;
+  for (const i of brokerOrder()){
+    client = await connectBroker(i, { will:{ topic:TOP.alive(code), payload:enc({down:true, t:Date.now()}), qos:1, retain:true } });
+    if (gen!==S.gen){ if (client) client.end(true); return; }
+    if (client){ bi=i; break; }
+  }
+  if (!client){ S.status="No hay conexión con el servidor del juego. Revisa tu internet y vuelve a intentarlo."; render(); return; }
+  if (!restored){
+    const prev = await readAlive(client, code, 1500);
+    if (gen!==S.gen){ client.end(true); return; }
+    if (prev && Date.now()-(prev.t||0) < 6*3600e3){ client.end(true); return hostRoom(newCode()); }
+  }
+  S.mq=client; S.broker=bi; S.seen=new Map();
+  S.state = restored || { code, round:0, players:{}, ...blankGame() };
+  S.state.players[S.myId] = { ...(S.state.players[S.myId]||{team:"",role:"op"}), name:S.name, active:true };
+  ls.set("pc_room", code); ls.set("pc_role","host"); ls.set("pc_broker", String(bi)); S.status="";
+  const onConnect = () => {
+    client.subscribe(TOP.host(code), {qos:1});
+    pub(TOP.alive(code), aliveMsg(), true);
+    S.status=""; broadcast();
   };
-  const retry = () => { clearTimeout(S.retryT); S.retryT=setTimeout(connect, 2500); };
-  peer.on("open", connect);
-  peer.on("error", err => {
-    if (err.type==="peer-unavailable"){
-      if (!S.room){ toast("No hay ninguna sala abierta con el código "+code+"."); ls.set("pc_room",""); goHome(); }
-      else { S.status="El creador no está conectado. Reintentando…"; render(); retry(); }
-    } else if (["network","server-error","socket-error"].includes(err.type)){ S.status="Sin conexión. Reintentando…"; render(); }
-    else console.warn(err);
+  client.on("connect", onConnect);
+  client.on("offline", () => { if (gen===S.gen){ S.status="Sin conexión. Reintentando…"; render(); } });
+  client.on("message", (topic, buf) => {
+    if (topic!==TOP.host(code)) return;
+    const msg=dec(buf); if (!msg || typeof msg!=="object") return;
+    const pid=String(msg.from||"").slice(0,24); if (!pid || pid===S.myId) return;
+    const wasOnline = isOnline(pid);
+    S.seen.set(pid, Date.now());
+    if (msg.type==="hello"){
+      let prev=S.state.players[pid];
+      const nm=String(msg.name||"").trim().toLowerCase();
+      if (!prev && nm) for (const [oid,op] of Object.entries(S.state.players)){
+        if (oid!==S.myId && !isOnline(oid) && op.active && op.name.trim().toLowerCase()===nm){ prev=op; delete S.state.players[oid]; break; }
+      }
+      S.state.players[pid] = { team:prev?.team||"", role:prev?.role||"op", name:String(msg.name||"Jugador").slice(0,20), active:true };
+      broadcast();
+    } else if (msg.type==="act" && S.state.players[pid]) applyAction(pid, msg.action);
+    else if (msg.type==="ping" && !wasOnline) broadcast();
   });
-  peer.on("disconnected", () => { setTimeout(()=>{ try{ if(S.peer===peer && !peer.destroyed) peer.reconnect(); }catch(e){} }, 1500); });
+  onConnect();
+  setUrl(code); keepAwake();
+  S.hb = setInterval(() => {
+    if (gen!==S.gen) return;
+    pub(TOP.alive(code), aliveMsg(), true);
+    // si alguien se ha desconectado, avisar al resto
+    const sig = Object.keys(S.state.players).filter(isOnline).sort().join(",");
+    if (sig!==S.onlineSig){ S.onlineSig=sig; broadcast(); }
+  }, 10000);
+}
+function isOnline(pid){ return pid===S.myId || (S.seen && Date.now()-(S.seen.get(pid)||0) < 25000); }
+
+/* ---------- INVITADO ---------- */
+async function joinRoom(code){
+  cleanup();
+  const gen = ++S.gen;
+  S.isHost=false; S.code=code; S.view="room"; S.room=null; S.status="Buscando la sala "+code+"…"; render();
+  let client=null, bi=-1, alive=null, anyBroker=false;
+  for (const i of brokerOrder()){
+    const c = await connectBroker(i);
+    if (gen!==S.gen){ if (c) c.end(true); return; }
+    if (!c) continue;
+    anyBroker=true;
+    const a = await readAlive(c, code, 2500);
+    if (gen!==S.gen){ c.end(true); return; }
+    if (a){ client=c; bi=i; alive=a; break; }
+    c.end(true);
+  }
+  if (!client){
+    toast(anyBroker ? "No hay ninguna sala abierta con el código "+code+"." : "No hay conexión con el servidor del juego. Revisa tu internet.");
+    if (anyBroker) ls.set("pc_room","");
+    goHome(); return;
+  }
+  S.mq=client; S.broker=bi;
+  const myTopic = TOP.player(code, S.myId);
+  const hello = () => pub(TOP.host(code), {from:S.myId, type:"hello", name:S.name});
+  const onConnect = () => { client.subscribe([myTopic, TOP.alive(code)], {qos:1}); hello(); };
+  client.on("connect", onConnect);
+  client.on("offline", () => { if (gen===S.gen){ S.status="Sin conexión. Reintentando…"; render(); } });
+  client.on("message", (topic, buf) => {
+    if (gen!==S.gen) return;
+    if (topic===TOP.alive(code)){
+      const a = buf && buf.length ? dec(buf) : null;
+      if (!a){ toast("El creador ha cerrado la sala."); ls.set("pc_room",""); goHome(); return; }
+      if (a.down){ S.status="El creador de la sala se ha desconectado. Esperando a que vuelva…"; render(); }
+      else if (S.status){ S.status=""; hello(); render(); }
+      return;
+    }
+    const msg=dec(buf); if (!msg) return;
+    if (msg.type==="state"){ S.lastState=Date.now(); if (S.status && !S.status.startsWith("El creador")) S.status=""; setRoom(msg.state); }
+    else if (msg.type==="toast") toast(msg.msg);
+    else if (msg.type==="closed"){ toast("El creador ha cerrado la sala."); ls.set("pc_room",""); goHome(); }
+  });
+  onConnect();
+  if (alive.down) S.status="El creador de la sala se ha desconectado. Esperando a que vuelva…";
+  ls.set("pc_room", code); ls.set("pc_role","guest"); ls.set("pc_broker", String(bi)); setUrl(code); render();
+  S.hb = setInterval(() => {
+    if (gen!==S.gen) return;
+    pub(TOP.host(code), {from:S.myId, type:"ping"});
+    if (!S.room) hello();
+  }, 8000);
+  setTimeout(() => { if (gen===S.gen && !S.room) hello(); }, 3000);
 }
 
 function act(action){
   if (S.isHost) applyAction(S.myId, action);
-  else if (S.conn && S.conn.open) S.conn.send({type:"act", action});
+  else if (S.mq && S.mq.connected) pub(TOP.host(S.code), {from:S.myId, type:"act", action});
   else toast("Sin conexión con la sala. Espera un momento.");
 }
 
 function cleanup(){
-  clearTimeout(S.retryT);
-  if (S.peer){ try{ S.peer.destroy(); }catch(e){} }
-  S.peer=null; S.conn=null; S.conns=new Map(); S.state=null; S.room=null; S.sel=-1; S.lastRevealed=null;
+  S.gen=(S.gen||0)+1;
+  clearInterval(S.hb); S.hb=null;
+  if (S.mq){ const c=S.mq; S.mq=null; try{ c.end(false); }catch(e){} }
+  S.seen=new Map(); S.onlineSig=""; S.state=null; S.room=null; S.sel=-1; S.lastRevealed=null;
 }
 function goHome(){ cleanup(); S.view="home"; S.code=""; S.status=""; setUrl(""); releaseAwake(); render(); }
 function leave(){
   if (S.isHost){
     if (!confirm("Si sales, la sala se cierra para todos. ¿Salir?")) return;
-    for (const c of S.conns.values()) { try{ c.send({type:"closed"}); }catch(e){} }
+    for (const pid of Object.keys(S.state.players)) if (pid!==S.myId) pub(TOP.player(S.code,pid), {type:"closed"});
+    pub(TOP.alive(S.code), "", true);
     ls.set("pc_host_state",""); ls.set("pc_room","");
-    setTimeout(goHome, 200);
-  } else { act({type:"leave"}); ls.set("pc_room",""); setTimeout(goHome, 150); }
+    setTimeout(goHome, 400);
+  } else { act({type:"leave"}); ls.set("pc_room",""); setTimeout(goHome, 300); }
 }
 
 function newCode(){ let c=""; for(let i=0;i<4;i++) c+=CODE_CHARS[Math.floor(Math.random()*CODE_CHARS.length)]; return c; }
 function setUrl(code){ try { const u=new URL(location.href); if (code) u.searchParams.set("sala",code); else u.searchParams.delete("sala"); history.replaceState(null,"",u); } catch(e){} }
-function shareLink(){ try { const u=new URL(location.href); u.searchParams.set("sala",S.code); return u.toString(); } catch(e){ return location.href; } }
+function shareLink(){ try { const u=new URL(location.href); u.searchParams.set("sala",S.code); if (S.broker>=0) u.searchParams.set("s",S.broker); return u.toString(); } catch(e){ return location.href; } }
 async function keepAwake(){ try { if ("wakeLock" in navigator) S.wake = await navigator.wakeLock.request("screen"); } catch(e){} }
 function releaseAwake(){ try { S.wake && S.wake.release(); } catch(e){} S.wake=null; }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState==="visible" && S.isHost && S.view==="room") keepAwake(); });
@@ -458,7 +532,7 @@ function checkName(){
   if (!n){ toast("Escribe tu nombre para jugar."); return false; }
   S.name=n.slice(0,20); ls.set("pc_name",S.name); return true;
 }
-function peerReady(){ if (typeof Peer==="undefined"){ toast("No se ha podido cargar el módulo de conexión. Revisa tu internet."); return false; } return true; }
+function peerReady(){ if (typeof mqtt==="undefined"){ toast("No se ha podido cargar el módulo de conexión. Revisa tu internet."); return false; } return true; }
 
 /* ---------- Render ---------- */
 function players(r){ return Object.entries(r.players||{}).filter(([,p])=>p && p.active).map(([id,p])=>({id,...p})); }
@@ -690,7 +764,7 @@ if (fromUrl){
   S.draft.joinCode=fromUrl; render();
   if (S.name){
     const go=()=>{
-      if (typeof Peer==="undefined") return setTimeout(go,300);
+      if (typeof mqtt==="undefined") return setTimeout(go,300);
       if (ls.get("pc_role")==="host" && ls.get("pc_room")===fromUrl){
         let saved=null; try { saved=JSON.parse(ls.get("pc_host_state")); } catch(err){}
         if (saved && saved.code===fromUrl) hostRoom(fromUrl, saved.state, saved.hostId); else joinRoom(fromUrl);
